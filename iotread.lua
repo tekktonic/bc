@@ -1,56 +1,90 @@
 local sleep = require("socket").sleep
 local http = require("socket.http")
 local json = require("json")
+local statvfs = require("posix.sys.statvfs").statvfs
 
 local server = "http://localhost:8080"
 
-function generate_laptop(id)
-   math.randomseed(os.time())
-   retval = {}
-   retval.id = id
-   retval.fan_rpm = math.random(960) * 10
-   retval.temperature = math.random(100)
-   retval.cores = math.random(7) + 1
-   retval.cpu = math.random(101)
 
-   retval.max_memory = math.random(math.pow(2, 20) + 1 )
-   retval.memory_used = math.floor(retval.max_memory * math.random())
-
-   retval.disk_space = math.random(math.pow(2, 49) + 1)
-   retval.disk_used = math.floor(retval.disk_space * math.random())
-
-   retval.wifi_signal = math.random(3) + 1
-   return retval
-end
-
-function laptop_step(last)
-   print("Laptop step")
-   retval = last
-   retval.fan_rpm = math.random(96) * 1000
-   retval.temperature = math.random(100)
-      
-   for core = 1, last.cores do
-      retval.cpu = math.random(101)
+function collect(it)
+   local retval = {}
+   for entry in it do
+      table.insert(retval, entry)
    end
-
-   retval.memory_used = math.floor(retval.max_memory * math.random())
-   retval.disk_used = math.floor(retval.disk_space * math.random())
-   
-   retval.wifi_signal = math.random(3) + 1
-
    return retval
 end
 
+function map(f, arr)
+   local retval = {}
+   for _,entry in pairs(arr) do
+      retval[#retval + 1] = f(entry)
+   end
+   return retval
+end
 
+function filter(f, arr)
+   local retval = {}
+   for _,entry in pairs(arr) do
+      if f(entry) then
+	 table.insert(retval, entry)
+      end
+   end
+end
+
+function get_cpu()
+   local f = io.open("/proc/stat", "r")
+   local cpuline = f:read()
+
+   local cpu_entries = collect(cpuline:gmatch("%d+"))
+
+   f:close()
+
+   return (cpu_entries[1] + cpu_entries[3]) / (cpu_entries[1] + cpu_entries[3] + cpu_entries[4]) * 100
+end
+
+
+function get_memory()
+   local memory_stats = {}
+   local mem_entries = map(function(entry)
+	                       return entry:match("%d+")
+			   end,
+      collect(io.lines("/proc/meminfo")))
+
+   memory_stats.max = mem_entries[1]
+   memory_stats.used = memory_stats.max - mem_entries[3]
+   return memory_stats;
+end
+
+function get_root()
+   local root_stats = {}
+   local info = statvfs("/")
+   root_stats.max = (info.f_bsize * info.f_blocks) / 1024
+   root_stats.used = root_stats.max - ((info.f_bsize * info.f_bfree) / 1024)
+
+
+   return root_stats
+end
+
+function laptop_step()
+   local laptop = {}
+   laptop.memory = get_memory()
+   laptop.cpu = get_cpu()
+   laptop.disk = get_root()
+
+   return laptop
+end
 -- Register with the server so that we can get a usable ID.
-local id = http.request(server .. "/register")
-local laptop = generate_laptop(80)
+--local id = http.request(server .. "/register")
 
-print(laptop)
-print(laptop.id)
 while true do
-   http.request(server .. "/" .. laptop.id, json.encode(laptop))
-   sleep(3)
+   --   http.request(server .. "/" .. laptop.id, json.encode(laptop))
    laptop = laptop_step(laptop)
+   print("Current computer status:\n")
+   print("CPU: " .. laptop.cpu .. "%\n")
+   print("Memory: " .. laptop.memory.used .. "K/" .. laptop.memory.max .. "K\n")
+   print("Root: " .. laptop.disk.used .. "K/" .. laptop.disk.max .. "K\n")
+   
+   sleep(3)
+
 end
 
